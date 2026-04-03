@@ -3782,8 +3782,23 @@
         }
 
         // Play a specific model answer text (index 0 or 1)
+        // Model answer playback - completely separate from main speak()
+        var _modelAudio1 = null;
+        var _modelAudio2 = null;
+        var _modelPlaying = false;
+
+        function stopModelAudio() {
+            _modelPlaying = false;
+            if (_modelAudio1) { try { _modelAudio1.pause(); _modelAudio1.src = ''; } catch(e){} _modelAudio1 = null; }
+            if (_modelAudio2) { try { _modelAudio2.pause(); _modelAudio2.src = ''; } catch(e){} _modelAudio2 = null; }
+        }
+
         function speakModel(idx) {
+            // Stop any current model playback
+            stopModelAudio();
+            // Also stop main speak if playing
             stopSpeaking();
+
             var text = _feedbackModels[idx];
             if (!text) return;
 
@@ -3795,69 +3810,75 @@
                 btnEl.style.pointerEvents = 'none';
             }
 
-            var apiKey = (appState.settings.openaiApiKey || '').trim();
-            if (!apiKey) {
-                // Fallback: SpeechSynthesis
-                if (btnEl) { btnEl.innerHTML = '&#9632;'; btnEl.style.pointerEvents = 'auto'; }
-                var origAuto = appState.settings.autoPlayAudio;
-                appState.settings.autoPlayAudio = true;
-                speak(text);
-                appState.settings.autoPlayAudio = origAuto;
-                return;
-            }
-
-            // Split long text into 2 chunks for faster first-play
-            var sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
-            var mid = Math.ceil(sentences.length / 2);
-            var chunk1 = sentences.slice(0, mid).join(' ').trim();
-            var chunk2 = sentences.slice(mid).join(' ').trim();
-
-            isSpeaking = true;
-            var myId = ++ttsRequestId;
-            var localId = myId; // capture for closures (stopSpeaking won't affect this)
-
-            function resetBtn() {
+            function makePlayable() {
                 if (btnEl) {
                     btnEl.innerHTML = '&#9654;';
                     btnEl.style.pointerEvents = 'auto';
                     btnEl.onclick = function() { speakModel(idx); };
                 }
             }
-            function showStop() {
+            function makeStoppable() {
                 if (btnEl) {
                     btnEl.innerHTML = '&#9632;';
                     btnEl.style.pointerEvents = 'auto';
-                    btnEl.onclick = function() { stopSpeaking(); resetBtn(); };
+                    btnEl.onclick = function() { stopModelAudio(); makePlayable(); };
                 }
             }
 
-            // Fetch chunk1 + pre-fetch chunk2 in parallel
-            var p1 = fetchTTSAudio(chunk1, apiKey);
-            var p2 = chunk2 ? fetchTTSAudio(chunk2, apiKey) : Promise.resolve(null);
+            var apiKey = (appState.settings.openaiApiKey || '').trim();
+
+            // ── No API key: use SpeechSynthesis ──
+            if (!apiKey) {
+                makeStoppable();
+                if (synth) {
+                    synth.cancel();
+                    var u = new SpeechSynthesisUtterance(text);
+                    u.lang = bestVoice ? bestVoice.lang : 'en-AU';
+                    u.rate = appState.settings.speechRate || 1;
+                    if (bestVoice) u.voice = bestVoice;
+                    u.onend = function() { makePlayable(); };
+                    u.onerror = function() { makePlayable(); };
+                    synth.speak(u);
+                }
+                return;
+            }
+
+            // ── OpenAI TTS: split into 2 chunks ──
+            _modelPlaying = true;
+            var sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
+            var mid = Math.ceil(sentences.length / 2);
+            var chunk1 = sentences.slice(0, mid).join(' ').trim();
+            var chunk2 = sentences.slice(mid).join(' ').trim();
+
+            // Fetch both chunks in parallel
+            var p1 = fetchModelAudio(chunk1, apiKey);
+            var p2 = chunk2 ? fetchModelAudio(chunk2, apiKey) : Promise.resolve(null);
 
             p1.then(function(audio1) {
-                if (ttsRequestId !== localId) return;
-                showStop();
-                currentTTSAudio = audio1;
-                audio1.play().catch(function() { isSpeaking = false; resetBtn(); });
+                if (!_modelPlaying) return;
+                _modelAudio1 = audio1;
+                makeStoppable();
+                audio1.play().catch(function() { makePlayable(); });
                 audio1.onended = function() {
-                    if (ttsRequestId !== localId) { resetBtn(); return; }
+                    _modelAudio1 = null;
+                    if (!_modelPlaying) { makePlayable(); return; }
                     p2.then(function(audio2) {
-                        if (!audio2 || ttsRequestId !== localId) { isSpeaking = false; resetBtn(); return; }
-                        currentTTSAudio = audio2;
-                        audio2.play().catch(function() { isSpeaking = false; resetBtn(); });
-                        audio2.onended = function() { isSpeaking = false; resetBtn(); };
-                    }).catch(function() { isSpeaking = false; resetBtn(); });
+                        if (!audio2 || !_modelPlaying) { _modelPlaying = false; makePlayable(); return; }
+                        _modelAudio2 = audio2;
+                        audio2.play().catch(function() { _modelPlaying = false; makePlayable(); });
+                        audio2.onended = function() { _modelAudio2 = null; _modelPlaying = false; makePlayable(); };
+                        audio2.onerror = function() { _modelAudio2 = null; _modelPlaying = false; makePlayable(); };
+                    }).catch(function() { _modelPlaying = false; makePlayable(); });
                 };
+                audio1.onerror = function() { _modelAudio1 = null; _modelPlaying = false; makePlayable(); };
             }).catch(function(err) {
-                console.error('TTS error:', err);
-                isSpeaking = false;
-                resetBtn();
+                console.error('Model TTS error:', err);
+                _modelPlaying = false;
+                makePlayable();
             });
         }
 
-        // Fetch a single TTS audio, returns promise of Audio element
-        function fetchTTSAudio(text, apiKey) {
+        function fetchModelAudio(text, apiKey) {
             return fetch('https://api.openai.com/v1/audio/speech', {
                 method: 'POST',
                 headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
