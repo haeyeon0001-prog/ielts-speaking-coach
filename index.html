@@ -305,6 +305,16 @@
             to { transform: rotate(360deg); }
         }
 
+        .tts-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2.5px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.5s linear infinite;
+        }
+
         .chat-bubble {
             margin: 6px 0;
             padding: 12px 14px;
@@ -3756,87 +3766,79 @@
             return result;
         }
 
-        // Play a specific model answer text with loading feedback on button
-        function speakModel(text, btnEl) {
+        // Play a specific model answer text (index 0 or 1)
+        function speakModel(idx) {
             stopSpeaking();
-            // Find the clicked button for visual feedback
-            if (!btnEl) {
-                // Find from event if not passed
-                btnEl = event && event.currentTarget ? event.currentTarget : null;
-            }
+            var text = _feedbackModels[idx];
+            if (!text) return;
+
+            var btnEl = document.getElementById('modelPlayBtn' + idx);
+
+            // Immediate visual feedback: show spinner
             if (btnEl) {
-                btnEl.dataset.origHtml = btnEl.innerHTML;
-                btnEl.innerHTML = '<span style="display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.6s linear infinite;"></span>';
-                btnEl.disabled = true;
+                btnEl.innerHTML = '<span class="tts-spinner"></span>';
+                btnEl.style.pointerEvents = 'none';
             }
 
             var apiKey = (appState.settings.openaiApiKey || '').trim();
-            if (apiKey) {
-                // Split long text into 2 chunks for faster first-play
-                var sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
-                var mid = Math.ceil(sentences.length / 2);
-                var chunk1 = sentences.slice(0, mid).join(' ').trim();
-                var chunk2 = sentences.slice(mid).join(' ').trim();
-
-                var myId = ++ttsRequestId;
-                isSpeaking = true;
-
-                // Fetch first chunk
-                fetchTTSChunk(chunk1, apiKey, myId).then(function(audio1) {
-                    if (myId !== ttsRequestId) return;
-                    // Restore button to stop icon
-                    if (btnEl) {
-                        btnEl.innerHTML = '&#9724;';
-                        btnEl.disabled = false;
-                        btnEl.onclick = function() { stopSpeaking(); btnEl.innerHTML = '&#9654;'; btnEl.onclick = function(){ speakModel(text, btnEl); }; };
-                    }
-                    currentTTSAudio = audio1;
-                    audio1.play().catch(function() { isSpeaking = false; });
-
-                    // Pre-fetch second chunk while first plays
-                    var chunk2Promise = chunk2 ? fetchTTSChunk(chunk2, apiKey, myId) : Promise.resolve(null);
-
-                    audio1.onended = function() {
-                        if (myId !== ttsRequestId) return;
-                        chunk2Promise.then(function(audio2) {
-                            if (!audio2 || myId !== ttsRequestId) {
-                                isSpeaking = false;
-                                if (btnEl) { btnEl.innerHTML = '&#9654;'; btnEl.onclick = function(){ speakModel(text, btnEl); }; }
-                                return;
-                            }
-                            currentTTSAudio = audio2;
-                            audio2.play().catch(function() { isSpeaking = false; });
-                            audio2.onended = function() {
-                                isSpeaking = false;
-                                if (btnEl) { btnEl.innerHTML = '&#9654;'; btnEl.onclick = function(){ speakModel(text, btnEl); }; }
-                            };
-                        });
-                    };
-                }).catch(function(err) {
-                    if (err.message === 'cancelled') return;
-                    console.error('TTS error:', err);
-                    isSpeaking = false;
-                    if (btnEl) {
-                        btnEl.innerHTML = '&#9654;';
-                        btnEl.disabled = false;
-                        btnEl.onclick = function(){ speakModel(text, btnEl); };
-                    }
-                });
-            } else {
+            if (!apiKey) {
                 // Fallback: SpeechSynthesis
-                if (btnEl) { btnEl.innerHTML = '&#9724;'; btnEl.disabled = false; }
+                if (btnEl) { btnEl.innerHTML = '&#9632;'; btnEl.style.pointerEvents = 'auto'; }
+                var origAuto = appState.settings.autoPlayAudio;
                 appState.settings.autoPlayAudio = true;
                 speak(text);
-                // Restore when done (rough timing)
-                var dur = text.length * 60;
-                setTimeout(function() {
-                    if (btnEl) { btnEl.innerHTML = '&#9654;'; btnEl.onclick = function(){ speakModel(text, btnEl); }; }
-                }, dur);
+                appState.settings.autoPlayAudio = origAuto;
+                return;
             }
+
+            // Split long text into 2 chunks for faster first-play
+            var sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
+            var mid = Math.ceil(sentences.length / 2);
+            var chunk1 = sentences.slice(0, mid).join(' ').trim();
+            var chunk2 = sentences.slice(mid).join(' ').trim();
+
+            isSpeaking = true;
+            var myId = ++ttsRequestId;
+            var localId = myId; // capture for closures (stopSpeaking won't affect this)
+
+            function resetBtn() {
+                if (btnEl) { btnEl.innerHTML = '&#9654;'; btnEl.style.pointerEvents = 'auto'; }
+            }
+            function showStop() {
+                if (btnEl) {
+                    btnEl.innerHTML = '&#9632;';
+                    btnEl.style.pointerEvents = 'auto';
+                    btnEl.onclick = function() { stopSpeaking(); resetBtn(); };
+                }
+            }
+
+            // Fetch chunk1 + pre-fetch chunk2 in parallel
+            var p1 = fetchTTSAudio(chunk1, apiKey);
+            var p2 = chunk2 ? fetchTTSAudio(chunk2, apiKey) : Promise.resolve(null);
+
+            p1.then(function(audio1) {
+                if (ttsRequestId !== localId) return;
+                showStop();
+                currentTTSAudio = audio1;
+                audio1.play().catch(function() { isSpeaking = false; resetBtn(); });
+                audio1.onended = function() {
+                    if (ttsRequestId !== localId) { resetBtn(); return; }
+                    p2.then(function(audio2) {
+                        if (!audio2 || ttsRequestId !== localId) { isSpeaking = false; resetBtn(); return; }
+                        currentTTSAudio = audio2;
+                        audio2.play().catch(function() { isSpeaking = false; resetBtn(); });
+                        audio2.onended = function() { isSpeaking = false; resetBtn(); };
+                    }).catch(function() { isSpeaking = false; resetBtn(); });
+                };
+            }).catch(function(err) {
+                console.error('TTS error:', err);
+                isSpeaking = false;
+                resetBtn();
+            });
         }
 
-        // Fetch a single TTS chunk, returns promise of Audio element
-        function fetchTTSChunk(text, apiKey, reqId) {
+        // Fetch a single TTS audio, returns promise of Audio element
+        function fetchTTSAudio(text, apiKey) {
             return fetch('https://api.openai.com/v1/audio/speech', {
                 method: 'POST',
                 headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
@@ -3848,15 +3850,13 @@
                     response_format: 'mp3'
                 })
             }).then(function(res) {
-                if (reqId !== ttsRequestId) throw new Error('cancelled');
                 if (!res.ok) return res.json().then(function(e) { throw new Error(e.error ? e.error.message : 'API Error'); });
                 return res.blob();
             }).then(function(blob) {
-                if (reqId !== ttsRequestId) throw new Error('cancelled');
                 var url = URL.createObjectURL(blob);
                 var audio = new Audio(url);
-                audio.onended = function() { URL.revokeObjectURL(url); };
-                audio.onerror = function() { URL.revokeObjectURL(url); };
+                audio.addEventListener('ended', function() { URL.revokeObjectURL(url); });
+                audio.addEventListener('error', function() { URL.revokeObjectURL(url); });
                 return audio;
             });
         }
@@ -3948,7 +3948,7 @@
             html += '<div class="feedback-section">';
             html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
             html += '<h4 style="margin:0;">Model Answer A</h4>';
-            html += '<button onclick="speakModel(_feedbackModels[0], this)" style="background:var(--primary);color:white;border:none;border-radius:50%;width:36px;height:36px;min-width:36px;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-sm);transition:transform 0.1s;" title="Play">&#9654;</button>';
+            html += '<button id="modelPlayBtn0" onclick="speakModel(0)" style="background:var(--primary);color:white;border:none;border-radius:50%;width:36px;height:36px;min-width:36px;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-sm);" title="Play">&#9654;</button>';
             html += '</div>';
             html += '<div style="padding:12px;background:var(--bg-card);border-radius:8px;border-left:3px solid var(--success);line-height:1.6;font-size:14px;">' + escH(models[0]) + '</div>';
             html += '</div>';
@@ -3957,7 +3957,7 @@
             html += '<div class="feedback-section">';
             html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
             html += '<h4 style="margin:0;">Model Answer B</h4>';
-            html += '<button onclick="speakModel(_feedbackModels[1], this)" style="background:var(--primary);color:white;border:none;border-radius:50%;width:36px;height:36px;min-width:36px;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-sm);transition:transform 0.1s;" title="Play">&#9654;</button>';
+            html += '<button id="modelPlayBtn1" onclick="speakModel(1)" style="background:var(--primary);color:white;border:none;border-radius:50%;width:36px;height:36px;min-width:36px;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-sm);" title="Play">&#9654;</button>';
             html += '</div>';
             html += '<div style="padding:12px;background:var(--bg-card);border-radius:8px;border-left:3px solid #8b5cf6;line-height:1.6;font-size:14px;">' + escH(models[1]) + '</div>';
             html += '</div>';
