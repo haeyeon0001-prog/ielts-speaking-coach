@@ -3817,7 +3817,11 @@
             var localId = myId; // capture for closures (stopSpeaking won't affect this)
 
             function resetBtn() {
-                if (btnEl) { btnEl.innerHTML = '&#9654;'; btnEl.style.pointerEvents = 'auto'; }
+                if (btnEl) {
+                    btnEl.innerHTML = '&#9654;';
+                    btnEl.style.pointerEvents = 'auto';
+                    btnEl.onclick = function() { speakModel(idx); };
+                }
             }
             function showStop() {
                 if (btnEl) {
