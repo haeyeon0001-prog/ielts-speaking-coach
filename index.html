@@ -3174,9 +3174,10 @@
         if (window.webkitSpeechRecognition || window.SpeechRecognition) {
             const SR = window.webkitSpeechRecognition || window.SpeechRecognition;
             recognition = new SR();
-            recognition.lang = 'en-AU';
-            recognition.continuous = false;
+            recognition.lang = 'en-US';
+            recognition.continuous = true;
             recognition.interimResults = true;
+            recognition.maxAlternatives = 1;
         }
 
         // Find the best available voice, preferring natural/premium voices
@@ -3359,18 +3360,65 @@
             }
         }
 
+        let micActive = false;
+
         function startMic() {
             if (!recognition) { alert('音声認識がこのブラウザで使えません。テキスト入力をご利用ください。'); return; }
+
+            // Toggle: if already active, stop
+            if (micActive) {
+                recognition.stop();
+                micActive = false;
+                var micBtn = document.querySelector('.mic-btn, [onclick*="startMic"]');
+                if (micBtn) micBtn.style.opacity = '1';
+                return;
+            }
+
+            // Stop any playing TTS first (iOS can't do both)
+            stopSpeaking();
+
             recognition.onresult = (e) => {
-                let t = '';
+                let finalText = '';
+                let interimText = '';
                 for (let i = e.resultIndex; i < e.results.length; i++) {
-                    if (e.results[i].isFinal) t += e.results[i][0].transcript + ' ';
+                    if (e.results[i].isFinal) {
+                        finalText += e.results[i][0].transcript + ' ';
+                    } else {
+                        interimText += e.results[i][0].transcript;
+                    }
                 }
                 const el = document.getElementById('responseText');
-                if (el) el.value += t;
+                if (el && finalText) el.value += finalText;
             };
-            recognition.onerror = () => {};
-            recognition.start();
+
+            recognition.onerror = (e) => {
+                console.error('Speech recognition error:', e.error);
+                micActive = false;
+                if (e.error === 'not-allowed') {
+                    alert('マイクへのアクセスが許可されていません。設定でマイクの権限を確認してください。');
+                } else if (e.error === 'no-speech') {
+                    // Silently restart - user just hasn't spoken yet
+                    try { recognition.start(); micActive = true; } catch(ex) {}
+                } else if (e.error !== 'aborted') {
+                    alert('音声認識エラー: ' + e.error);
+                }
+            };
+
+            recognition.onend = () => {
+                // Auto-restart if still in mic mode (iOS stops after each phrase)
+                if (micActive) {
+                    try { recognition.start(); } catch(ex) { micActive = false; }
+                }
+            };
+
+            try {
+                recognition.start();
+                micActive = true;
+                var micBtn = document.querySelector('.mic-btn, [onclick*="startMic"]');
+                if (micBtn) micBtn.style.opacity = '0.6';
+            } catch(ex) {
+                alert('音声認識を開始できません: ' + ex.message);
+            }
         }
 
         // ============================================================
