@@ -3167,18 +3167,13 @@
         // ============================================================
 
         const synth = window.speechSynthesis;
-        let recognition = null;
         let bestVoice = null;
         let allEnVoices = [];
 
-        if (window.webkitSpeechRecognition || window.SpeechRecognition) {
-            const SR = window.webkitSpeechRecognition || window.SpeechRecognition;
-            recognition = new SR();
-            recognition.lang = 'en-US';
-            recognition.continuous = true;
-            recognition.interimResults = true;
-            recognition.maxAlternatives = 1;
-        }
+        // Whisper API: MediaRecorder for audio capture
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let mediaStream = null;
 
         // Find the best available voice, preferring natural/premium voices
         function findBestVoice() {
@@ -3363,62 +3358,148 @@
         let micActive = false;
 
         function startMic() {
-            if (!recognition) { alert('音声認識がこのブラウザで使えません。テキスト入力をご利用ください。'); return; }
-
-            // Toggle: if already active, stop
+            // Toggle: if already recording, stop and transcribe
             if (micActive) {
-                recognition.stop();
-                micActive = false;
-                var micBtn = document.querySelector('.mic-btn, [onclick*="startMic"]');
-                if (micBtn) micBtn.style.opacity = '1';
+                stopMic();
                 return;
             }
 
-            // Stop any playing TTS first (iOS can't do both)
+            var apiKey = (appState.settings.openaiApiKey || '').trim();
+            if (!apiKey) {
+                alert('OpenAI APIキーが設定されていません。設定画面でAPIキーを入力してください。');
+                return;
+            }
+
+            // Stop any playing TTS first
             stopSpeaking();
 
-            recognition.onresult = (e) => {
-                let finalText = '';
-                let interimText = '';
-                for (let i = e.resultIndex; i < e.results.length; i++) {
-                    if (e.results[i].isFinal) {
-                        finalText += e.results[i][0].transcript + ' ';
-                    } else {
-                        interimText += e.results[i][0].transcript;
+            // Start recording
+            navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(function(stream) {
+                mediaStream = stream;
+                audioChunks = [];
+
+                // Use compatible MIME type
+                var mimeType = 'audio/webm';
+                if (typeof MediaRecorder.isTypeSupported === 'function') {
+                    if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+                        mimeType = 'audio/webm;codecs=opus';
+                    } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+                        mimeType = 'audio/mp4';
+                    } else if (MediaRecorder.isTypeSupported('audio/wav')) {
+                        mimeType = 'audio/wav';
                     }
                 }
-                const el = document.getElementById('responseText');
-                if (el && finalText) el.value += finalText;
-            };
 
-            recognition.onerror = (e) => {
-                console.error('Speech recognition error:', e.error);
-                micActive = false;
-                if (e.error === 'not-allowed') {
-                    alert('マイクへのアクセスが許可されていません。設定でマイクの権限を確認してください。');
-                } else if (e.error === 'no-speech') {
-                    // Silently restart - user just hasn't spoken yet
-                    try { recognition.start(); micActive = true; } catch(ex) {}
-                } else if (e.error !== 'aborted') {
-                    alert('音声認識エラー: ' + e.error);
-                }
-            };
+                mediaRecorder = new MediaRecorder(stream, { mimeType: mimeType });
 
-            recognition.onend = () => {
-                // Auto-restart if still in mic mode (iOS stops after each phrase)
-                if (micActive) {
-                    try { recognition.start(); } catch(ex) { micActive = false; }
-                }
-            };
+                mediaRecorder.ondataavailable = function(e) {
+                    if (e.data.size > 0) audioChunks.push(e.data);
+                };
 
-            try {
-                recognition.start();
+                mediaRecorder.onstop = function() {
+                    // Stop microphone
+                    if (mediaStream) {
+                        mediaStream.getTracks().forEach(function(t) { t.stop(); });
+                        mediaStream = null;
+                    }
+
+                    if (audioChunks.length === 0) return;
+
+                    var blob = new Blob(audioChunks, { type: mimeType });
+                    audioChunks = [];
+
+                    // Send to Whisper API
+                    transcribeAudio(blob, mimeType);
+                };
+
+                mediaRecorder.start(1000); // Collect data every second
                 micActive = true;
-                var micBtn = document.querySelector('.mic-btn, [onclick*="startMic"]');
-                if (micBtn) micBtn.style.opacity = '0.6';
-            } catch(ex) {
-                alert('音声認識を開始できません: ' + ex.message);
+
+                // Visual feedback: pulse the mic button
+                var micBtn = document.querySelector('[onclick*="startMic"]');
+                if (micBtn) {
+                    micBtn.style.background = '#e74c3c';
+                    micBtn.style.color = 'white';
+                    micBtn.innerHTML = '⏹';
+                }
+
+                // Show recording indicator
+                var el = document.getElementById('responseText');
+                if (el && !el.value) el.placeholder = '🔴 録音中... もう一度マイクボタンで停止';
+            })
+            .catch(function(err) {
+                console.error('Microphone error:', err);
+                if (err.name === 'NotAllowedError') {
+                    alert('マイクへのアクセスが許可されていません。ブラウザの設定でマイクの権限を確認してください。');
+                } else {
+                    alert('マイクエラー: ' + err.message);
+                }
+            });
+        }
+
+        function stopMic() {
+            micActive = false;
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
             }
+            // Reset mic button
+            var micBtn = document.querySelector('[onclick*="startMic"]');
+            if (micBtn) {
+                micBtn.style.background = '';
+                micBtn.style.color = '';
+                micBtn.innerHTML = '🎤';
+            }
+            var el = document.getElementById('responseText');
+            if (el) el.placeholder = '英語で回答してください...';
+        }
+
+        function transcribeAudio(blob, mimeType) {
+            var apiKey = (appState.settings.openaiApiKey || '').trim();
+            var ext = mimeType.indexOf('mp4') >= 0 ? 'mp4' : mimeType.indexOf('wav') >= 0 ? 'wav' : 'webm';
+
+            // Show transcribing status
+            var el = document.getElementById('responseText');
+            if (el) el.placeholder = '📝 文字起こし中...';
+
+            var formData = new FormData();
+            formData.append('file', blob, 'recording.' + ext);
+            formData.append('model', 'whisper-1');
+            formData.append('language', 'en');
+            formData.append('response_format', 'text');
+
+            fetch('https://api.openai.com/v1/audio/transcriptions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Bearer ' + apiKey
+                },
+                body: formData
+            })
+            .then(function(res) {
+                if (!res.ok) {
+                    return res.json().then(function(err) {
+                        throw new Error(err.error ? err.error.message : 'API Error ' + res.status);
+                    });
+                }
+                return res.text();
+            })
+            .then(function(text) {
+                var el = document.getElementById('responseText');
+                if (el) {
+                    el.value += (el.value ? ' ' : '') + text.trim();
+                    el.placeholder = '英語で回答してください...';
+                }
+            })
+            .catch(function(err) {
+                console.error('Whisper error:', err);
+                var el = document.getElementById('responseText');
+                if (el) el.placeholder = '英語で回答してください...';
+                var toast = document.createElement('div');
+                toast.textContent = '文字起こしエラー: ' + err.message;
+                toast.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:var(--danger);color:white;padding:8px 16px;border-radius:8px;z-index:10000;font-size:13px;';
+                document.body.appendChild(toast);
+                setTimeout(function() { toast.remove(); }, 3000);
+            });
         }
 
         // ============================================================
