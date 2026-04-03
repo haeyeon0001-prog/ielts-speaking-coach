@@ -3699,7 +3699,7 @@
             let html = '<div style="padding:4px 0;">';
 
             // User response
-            html += '<div class="feedback-section"><h4>あなたの回答</h4><div class="user-response-box">' + escH(userText) + '</div><div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">' + wordCount + ' words</div></div>';
+            html += '<div class="feedback-section"><h4>Question</h4><div style="padding:10px 12px;background:var(--primary-light);border-radius:8px;font-size:14px;line-height:1.5;margin-bottom:10px;border-left:3px solid var(--primary);">' + escH(question) + '</div><h4>Your Answer</h4><div class="user-response-box">' + escH(userText) + '</div><div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">' + wordCount + ' words</div></div>';
 
             // Corrections
             if (corrections.length > 0) {
