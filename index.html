@@ -929,7 +929,10 @@
                     <span class="header-subtitle" id="headerSubtitle">Home</span>
                 </div>
             </div>
-            <button class="settings-btn" id="settingsBtn">&#9881;</button>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <div id="sessionCounter" style="display:none;background:var(--primary);color:white;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:700;white-space:nowrap;"></div>
+                <button class="settings-btn" id="settingsBtn">&#9881;</button>
+            </div>
         </div>
 
         <!-- Main Content -->
@@ -3228,7 +3231,8 @@
                 ttsVoice: 'nova',
                 ttsSpeed: 0.95
             },
-            answerHistory: {}  // { questionText: [ {response, score, date}, ... ] }
+            answerHistory: {},  // { questionText: [ {response, score, date}, ... ] }
+            sessionAnswerCount: 0  // resets each session, increments per answer
         };
 
         // ============================================================
@@ -3641,18 +3645,24 @@
             const backBtn = document.getElementById('backBtn');
             const subtitle = document.getElementById('headerSubtitle');
 
+            var counter = document.getElementById('sessionCounter');
             if (id === 'homeScreen') {
                 backBtn.style.display = 'none';
                 subtitle.textContent = 'Home';
                 navHistory = [];
+                counter.style.display = 'none';
+                appState.sessionAnswerCount = 0;
                 updateHomeStats();
             } else {
                 backBtn.style.display = 'flex';
                 subtitle.textContent = appState.currentMode || '';
+                counter.style.display = 'block';
+                updateCounter();
             }
 
             if (id === 'studyScreen') {
                 subtitle.textContent = 'Study';
+                counter.style.display = 'none';
                 loadStudyPhrases();
             }
         }
@@ -3675,6 +3685,11 @@
             clearTimers();
             navHistory = [];
             showScreen('homeScreen');
+        }
+
+        function updateCounter() {
+            var el = document.getElementById('sessionCounter');
+            if (el) el.textContent = appState.sessionAnswerCount + ' answered';
         }
 
         // ============================================================
@@ -3978,6 +3993,10 @@
             recordAnswer(question, userText, parseFloat(band));
             appState.practiceData.scores = appState.practiceData.scores || [];
             appState.practiceData.scores.push(parseFloat(band));
+
+            // Increment session counter
+            appState.sessionAnswerCount++;
+            updateCounter();
         }
 
         function escH(s) {
