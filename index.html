@@ -3213,7 +3213,8 @@
                 openaiApiKey: '',
                 ttsVoice: 'nova',
                 ttsSpeed: 0.95
-            }
+            },
+            answerHistory: {}  // { questionText: [ {response, score, date}, ... ] }
         };
 
         // ============================================================
@@ -3224,7 +3225,8 @@
             try {
                 localStorage.setItem('ieltsV2', JSON.stringify({
                     stats: { ...appState.stats, vocabularyUsed: Array.from(appState.stats.vocabularyUsed) },
-                    settings: appState.settings
+                    settings: appState.settings,
+                    answerHistory: appState.answerHistory
                 }));
             } catch(e) {}
         }
@@ -3235,8 +3237,32 @@
                 if (s) {
                     appState.stats = { ...appState.stats, ...s.stats, vocabularyUsed: new Set(s.stats.vocabularyUsed || []) };
                     appState.settings = s.settings || appState.settings;
+                    appState.answerHistory = s.answerHistory || {};
                 }
             } catch(e) {}
+        }
+
+        // Record an answer to history
+        function recordAnswer(question, response, score) {
+            if (!appState.answerHistory[question]) {
+                appState.answerHistory[question] = [];
+            }
+            appState.answerHistory[question].push({
+                response: response,
+                score: score,
+                date: new Date().toISOString()
+            });
+            saveState();
+        }
+
+        // Get attempt number for a question
+        function getAttemptNumber(question) {
+            return (appState.answerHistory[question] || []).length + 1;
+        }
+
+        // Get past attempts for display
+        function getPastAttempts(question) {
+            return appState.answerHistory[question] || [];
         }
 
         // ============================================================
@@ -3657,25 +3683,90 @@
             return results;
         }
 
-        function getModel(part, question) {
-            if (part === 'part1') return PART1_MODELS[question] || 'Well, that\'s an interesting question. I would say that it depends on the situation, but generally speaking, I think it\'s important to consider various perspectives before forming an opinion.';
-            if (part === 'part2') {
-                const a = MODEL_PART2_ANSWERS.find(m => m.topic === question);
-                return a ? a.answer : 'I\'d like to talk about this topic. It\'s something that has had a significant impact on my life...';
+        // Returns an array of 2 model answers
+        function getModels(part, question) {
+            var m1, m2;
+            var fallback1 = 'Well, that\'s an interesting question. I would say that it depends on the situation, but generally speaking, I think it\'s important to consider various perspectives before forming an opinion.';
+            var fallback2 = 'That\'s something I\'ve thought about before. In my experience, there are different ways to approach this. Personally, I tend to think that a balanced perspective is always best.';
+
+            if (part === 'part1') {
+                m1 = PART1_MODELS[question] || fallback1;
+                // Generate a variant: find another answer from same topic or use alternative
+                var altKey = Object.keys(PART1_MODELS).find(function(k) { return k !== question && PART1_MODELS[k]; });
+                m2 = generateVariant(m1, question);
+            } else if (part === 'part2') {
+                var a = MODEL_PART2_ANSWERS.find(function(m) { return m.topic === question; });
+                m1 = a ? a.answer : 'I\'d like to talk about this topic. It\'s something that has had a significant impact on my life...';
+                m2 = generateVariant(m1, question);
+            } else if (part === 'part3') {
+                m1 = PART3_MODELS[question] || 'That\'s a thought-provoking question. I believe there are several factors to consider. Firstly, it depends on cultural context. Additionally, personal experiences play a significant role in shaping our views on this matter.';
+                m2 = generateVariant(m1, question);
+            } else if (part === 'conversation') {
+                var title = appState.practiceData.scenario ? appState.practiceData.scenario.title : '';
+                var models = CONVERSATION_MODELS[title];
+                var idx = appState.practiceData.exchangeIndex || 0;
+                m1 = models ? (models[idx] || 'That sounds great, thank you!') : 'Thank you, I appreciate your help.';
+                m2 = generateVariant(m1, question);
+            } else {
+                m1 = 'Model answer not available.';
+                m2 = m1;
             }
-            if (part === 'part3') return PART3_MODELS[question] || 'That\'s a thought-provoking question. I believe there are several factors to consider. Firstly, it depends on cultural context. Additionally, personal experiences play a significant role in shaping our views on this matter.';
-            if (part === 'conversation') {
-                const title = appState.practiceData.scenario ? appState.practiceData.scenario.title : '';
-                const models = CONVERSATION_MODELS[title];
-                const idx = appState.practiceData.exchangeIndex || 0;
-                return models ? (models[idx] || 'That sounds great, thank you!') : 'Thank you, I appreciate your help.';
-            }
-            return 'Model answer not available.';
+            return [m1, m2];
+        }
+
+        // Generate a variation of a model answer with different structure/vocabulary
+        function generateVariant(original, question) {
+            // Rephrase starters
+            var starters = [
+                'Well, to be honest, ', 'From my perspective, ', 'I\'d say that ',
+                'In my view, ', 'To answer that, ', 'Honestly speaking, ',
+                'I think ', 'Personally, I believe ', 'Actually, '
+            ];
+            var connectors = [
+                'Moreover, ', 'On top of that, ', 'What\'s more, ',
+                'Additionally, ', 'Besides that, ', 'Also, '
+            ];
+            var closers = [
+                ' So overall, I find this quite meaningful.',
+                ' All in all, it\'s something I value greatly.',
+                ' Looking back, I\'m quite satisfied with this.',
+                ' In the end, I think it\'s really worthwhile.',
+                ' So that\'s my take on it.'
+            ];
+
+            var sentences = original.split(/(?<=\.)\s+/);
+            if (sentences.length < 2) return starters[Math.floor(Math.random()*starters.length)] + original.charAt(0).toLowerCase() + original.slice(1);
+
+            var starter = starters[Math.floor(Math.random()*starters.length)];
+            var connector = connectors[Math.floor(Math.random()*connectors.length)];
+            var closer = closers[Math.floor(Math.random()*closers.length)];
+
+            // Rebuild: new starter + middle sentences shuffled slightly + new closer
+            var mid = sentences.slice(1, -1);
+            var firstSentence = sentences[0].replace(/^(Well,?\s*|I\s*|Actually,?\s*|To be honest,?\s*)/i, '');
+            firstSentence = firstSentence.charAt(0).toLowerCase() + firstSentence.slice(1);
+
+            var result = starter + firstSentence;
+            if (mid.length > 0) result += ' ' + connector + mid.join(' ');
+            result += closer;
+            return result;
+        }
+
+        // Play a specific model answer text
+        function speakModel(text) {
+            stopSpeaking();
+            var origAuto = appState.settings.autoPlayAudio;
+            appState.settings.autoPlayAudio = true;
+            speak(text);
+            appState.settings.autoPlayAudio = origAuto;
         }
 
         // ============================================================
         // FEEDBACK PANEL
         // ============================================================
+
+        // Store model answers globally so speakModel buttons can reference them
+        var _feedbackModels = [];
 
         function showFeedback(userText, question, part, onNext) {
             const corrections = correctGrammar(userText);
@@ -3694,40 +3785,97 @@
             score = Math.max(4.0, Math.min(9.0, score));
             const band = score.toFixed(1);
 
-            const model = getModel(part, question);
+            // Get 2 model answers
+            const models = getModels(part, question);
+            _feedbackModels = models;
+
+            // Attempt tracking
+            const attemptNum = getAttemptNumber(question);
+            const pastAttempts = getPastAttempts(question);
 
             let html = '<div style="padding:4px 0;">';
 
-            // User response
-            html += '<div class="feedback-section"><h4>Question</h4><div style="padding:10px 12px;background:var(--primary-light);border-radius:8px;font-size:14px;line-height:1.5;margin-bottom:10px;border-left:3px solid var(--primary);">' + escH(question) + '</div><h4>Your Answer</h4><div class="user-response-box">' + escH(userText) + '</div><div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">' + wordCount + ' words</div></div>';
+            // Attempt badge
+            html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">';
+            html += '<span style="background:var(--primary);color:white;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600;">' + attemptNum + ' attempt</span>';
+            if (pastAttempts.length > 0) {
+                var lastScore = pastAttempts[pastAttempts.length - 1].score;
+                var diff = (parseFloat(band) - lastScore).toFixed(1);
+                var diffColor = diff > 0 ? 'var(--success)' : diff < 0 ? 'var(--error)' : 'var(--text-secondary)';
+                var diffSign = diff > 0 ? '+' : '';
+                html += '<span style="font-size:12px;color:' + diffColor + ';font-weight:600;">' + diffSign + diff + ' vs last</span>';
+            }
+            html += '</div>';
+
+            // Question + User response
+            html += '<div class="feedback-section">';
+            html += '<h4>Question</h4><div style="padding:10px 12px;background:var(--primary-light);border-radius:8px;font-size:14px;line-height:1.5;margin-bottom:10px;border-left:3px solid var(--primary);">' + escH(question) + '</div>';
+            html += '<h4>Your Answer</h4><div class="user-response-box">' + escH(userText) + '</div>';
+            html += '<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">' + wordCount + ' words</div>';
+            html += '</div>';
+
+            // Past attempts history (collapsed)
+            if (pastAttempts.length > 0) {
+                html += '<div class="feedback-section">';
+                html += '<h4 style="cursor:pointer;" onclick="var el=document.getElementById(\'pastHistory\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';">Past Attempts (' + pastAttempts.length + ')</h4>';
+                html += '<div id="pastHistory" style="display:none;margin-top:8px;">';
+                pastAttempts.forEach(function(a, i) {
+                    var d = new Date(a.date);
+                    var dateStr = d.getMonth()+1 + '/' + d.getDate();
+                    html += '<div style="padding:8px 10px;background:var(--bg-card);border-radius:6px;margin-bottom:6px;font-size:13px;border-left:3px solid var(--border-strong);">';
+                    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
+                    html += '<span style="font-weight:600;">#' + (i+1) + ' - ' + dateStr + '</span>';
+                    html += '<span style="color:var(--primary);font-weight:700;">' + a.score + '</span>';
+                    html += '</div>';
+                    html += '<div style="color:var(--text-secondary);font-size:12px;line-height:1.4;">' + escH((a.response||'').substring(0, 80)) + '...</div>';
+                    html += '</div>';
+                });
+                html += '</div></div>';
+            }
 
             // Corrections
             if (corrections.length > 0) {
-                html += '<div class="feedback-section"><h4>✏️ 文法修正 (' + corrections.length + '件)</h4>';
+                html += '<div class="feedback-section"><h4>Grammar (' + corrections.length + ')</h4>';
                 corrections.forEach(c => {
-                    html += '<div class="correction-item"><small style="color:var(--text-secondary);">' + escH(c.msg) + '</small><br><span class="error-badge">❌ ' + escH(c.original) + '</span> <span class="arrow">→</span> <span class="correct-badge">✅ ' + escH(c.fixed) + '</span></div>';
+                    html += '<div class="correction-item"><small style="color:var(--text-secondary);">' + escH(c.msg) + '</small><br><span class="error-badge">' + escH(c.original) + '</span> <span class="arrow">→</span> <span class="correct-badge">' + escH(c.fixed) + '</span></div>';
                 });
                 html += '</div>';
             } else {
-                html += '<div class="feedback-section"><h4>✅ 文法エラーなし！</h4><p style="color:var(--success);">よくできました！</p></div>';
+                html += '<div class="feedback-section"><h4>Grammar</h4><p style="color:var(--success);font-size:14px;">No errors found!</p></div>';
             }
 
-            // Model answer
-            html += '<div class="feedback-section"><h4>📝 模範解答</h4><div style="padding:12px;background:var(--bg);border-radius:8px;border-left:3px solid var(--success);line-height:1.6;font-size:14px;">' + escH(model) + '</div></div>';
+            // Model Answer 1
+            html += '<div class="feedback-section">';
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+            html += '<h4 style="margin:0;">Model Answer A</h4>';
+            html += '<button onclick="speakModel(_feedbackModels[0])" style="background:var(--primary);color:white;border:none;border-radius:50%;width:34px;height:34px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-sm);" title="Play">&#9654;</button>';
+            html += '</div>';
+            html += '<div style="padding:12px;background:var(--bg-card);border-radius:8px;border-left:3px solid var(--success);line-height:1.6;font-size:14px;">' + escH(models[0]) + '</div>';
+            html += '</div>';
+
+            // Model Answer 2
+            html += '<div class="feedback-section">';
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+            html += '<h4 style="margin:0;">Model Answer B</h4>';
+            html += '<button onclick="speakModel(_feedbackModels[1])" style="background:var(--primary);color:white;border:none;border-radius:50%;width:34px;height:34px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-sm);" title="Play">&#9654;</button>';
+            html += '</div>';
+            html += '<div style="padding:12px;background:var(--bg-card);border-radius:8px;border-left:3px solid #8b5cf6;line-height:1.6;font-size:14px;">' + escH(models[1]) + '</div>';
+            html += '</div>';
 
             // Score
-            html += '<div class="feedback-section"><h4>🎯 推定スコア</h4><div style="text-align:center;font-size:36px;font-weight:700;color:var(--primary);padding:8px 0;">' + band + ' / 9.0</div>';
-            if (score < 5.5) html += '<p style="text-align:center;color:var(--text-secondary);">より長く、詳しく答えましょう。完全な文を使ってください。</p>';
-            else if (score < 6.5) html += '<p style="text-align:center;color:var(--text-secondary);">良い回答です。より高度な語彙と複文を使ってみましょう。</p>';
-            else html += '<p style="text-align:center;color:var(--text-secondary);">素晴らしい！この調子で練習を続けてください。</p>';
+            html += '<div class="feedback-section"><h4>Estimated Score</h4><div style="text-align:center;font-size:36px;font-weight:700;color:var(--primary);padding:8px 0;">' + band + ' / 9.0</div>';
+            if (score < 5.5) html += '<p style="text-align:center;color:var(--text-secondary);font-size:13px;">Try to answer in more detail with complete sentences.</p>';
+            else if (score < 6.5) html += '<p style="text-align:center;color:var(--text-secondary);font-size:13px;">Good response. Try using more advanced vocabulary and complex sentences.</p>';
+            else html += '<p style="text-align:center;color:var(--text-secondary);font-size:13px;">Excellent! Keep up this level of practice.</p>';
             html += '</div>';
 
             html += '</div>';
 
             document.getElementById('practiceContent').innerHTML = html;
-            document.getElementById('controlPanel').innerHTML = '<button class="btn btn-primary" onclick="(' + onNext.toString() + ')()" style="width:100%;">次の質問へ</button>';
+            document.getElementById('controlPanel').innerHTML = '<button class="btn btn-primary" onclick="(' + onNext.toString() + ')()" style="width:100%;">Next Question</button>';
 
-            // Save score
+            // Record this attempt & save score
+            recordAnswer(question, userText, parseFloat(band));
             appState.practiceData.scores = appState.practiceData.scores || [];
             appState.practiceData.scores.push(parseFloat(band));
         }
@@ -3783,14 +3931,16 @@
             const pd = appState.practiceData;
             if (pd.questionIndex >= pd.questions.length) { showResults(); return; }
             const q = pd.questions[pd.questionIndex];
+            var attempt = getAttemptNumber(q);
+            var attemptBadge = attempt > 1 ? ' <span style="background:var(--warning);color:white;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;margin-left:6px;">#' + attempt + '</span>' : '';
             document.getElementById('practiceContent').innerHTML =
-                '<div class="question-box"><h3>Part 1 - 質問 ' + (pd.questionIndex + 1) + '/' + pd.questions.length + ' (' + pd.topic + ')</h3><div class="question-text">' + q + '</div></div>' +
+                '<div class="question-box"><h3>Part 1 - Q' + (pd.questionIndex + 1) + '/' + pd.questions.length + attemptBadge + '</h3><div class="question-text">' + q + '</div></div>' +
                 '<div class="chat-bubble bubble-question">Examiner: ' + q + '</div>' +
-                '<textarea class="response-input" id="responseText" placeholder="英語で回答してください..."></textarea>' +
-                '<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">マイクボタンで音声入力もできます</div>';
+                '<textarea class="response-input" id="responseText" placeholder="Answer in English..."></textarea>' +
+                '<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">Tap the mic to use voice input</div>';
             document.getElementById('controlPanel').innerHTML =
                 '<button class="btn btn-primary btn-icon" onclick="startMic()">🎤</button>' +
-                '<button class="btn btn-primary" onclick="submitPart1()">回答を送信</button>';
+                '<button class="btn btn-primary" onclick="submitPart1()">Submit</button>';
             speak(q);
         }
 
@@ -3926,13 +4076,15 @@
             const pd = appState.practiceData;
             if (pd.p3Index >= pd.part3Qs.length) { showResults(); return; }
             const q = pd.part3Qs[pd.p3Index];
+            var attempt = getAttemptNumber(q);
+            var attemptBadge = attempt > 1 ? ' <span style="background:var(--warning);color:white;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;margin-left:6px;">#' + attempt + '</span>' : '';
             document.getElementById('practiceContent').innerHTML =
-                '<div class="question-box"><h3>Part 3 - 質問 ' + (pd.p3Index+1) + '/' + pd.part3Qs.length + '</h3><div class="question-text">' + q + '</div></div>' +
+                '<div class="question-box"><h3>Part 3 - Q' + (pd.p3Index+1) + '/' + pd.part3Qs.length + attemptBadge + '</h3><div class="question-text">' + q + '</div></div>' +
                 '<div class="chat-bubble bubble-question">Examiner: ' + q + '</div>' +
-                '<textarea class="response-input" id="responseText" placeholder="詳しく答えてください..."></textarea>';
+                '<textarea class="response-input" id="responseText" placeholder="Answer in detail..."></textarea>';
             document.getElementById('controlPanel').innerHTML =
                 '<button class="btn btn-primary btn-icon" onclick="startMic()">🎤</button>' +
-                '<button class="btn btn-primary" onclick="submitPart3()">回答を送信</button>';
+                '<button class="btn btn-primary" onclick="submitPart3()">Submit</button>';
             speak(q);
         }
 
@@ -3974,13 +4126,15 @@
             const pd = appState.practiceData;
             if (pd.p1Index >= pd.p1Qs.length) { showMockP2Prep(); return; }
             const q = pd.p1Qs[pd.p1Index];
+            var attempt = getAttemptNumber(q);
+            var attemptBadge = attempt > 1 ? ' <span style="background:var(--warning);color:white;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;margin-left:6px;">#' + attempt + '</span>' : '';
             document.getElementById('practiceContent').innerHTML =
-                '<div class="question-box"><h3>模試 Part 1 - 質問 ' + (pd.p1Index+1) + '/' + pd.p1Qs.length + '</h3><div class="question-text">' + q + '</div></div>' +
+                '<div class="question-box"><h3>Mock Part 1 - Q' + (pd.p1Index+1) + '/' + pd.p1Qs.length + attemptBadge + '</h3><div class="question-text">' + q + '</div></div>' +
                 '<div class="chat-bubble bubble-question">Examiner: ' + q + '</div>' +
-                '<textarea class="response-input" id="responseText" placeholder="回答を入力..."></textarea>';
+                '<textarea class="response-input" id="responseText" placeholder="Answer..."></textarea>';
             document.getElementById('controlPanel').innerHTML =
                 '<button class="btn btn-primary btn-icon" onclick="startMic()">🎤</button>' +
-                '<button class="btn btn-primary" onclick="submitMockP1()">送信</button>';
+                '<button class="btn btn-primary" onclick="submitMockP1()">Submit</button>';
             speak(q);
         }
 
@@ -4045,13 +4199,15 @@
             const pd = appState.practiceData;
             if (pd.p3Index >= pd.part3Qs.length) { showResults(); return; }
             const q = pd.part3Qs[pd.p3Index];
+            var attempt = getAttemptNumber(q);
+            var attemptBadge = attempt > 1 ? ' <span style="background:var(--warning);color:white;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;margin-left:6px;">#' + attempt + '</span>' : '';
             document.getElementById('practiceContent').innerHTML =
-                '<div class="question-box"><h3>模試 Part 3 - 質問 ' + (pd.p3Index+1) + '/' + pd.part3Qs.length + '</h3><div class="question-text">' + q + '</div></div>' +
+                '<div class="question-box"><h3>Mock Part 3 - Q' + (pd.p3Index+1) + '/' + pd.part3Qs.length + attemptBadge + '</h3><div class="question-text">' + q + '</div></div>' +
                 '<div class="chat-bubble bubble-question">Examiner: ' + q + '</div>' +
-                '<textarea class="response-input" id="responseText" placeholder="詳しく答えてください..."></textarea>';
+                '<textarea class="response-input" id="responseText" placeholder="Answer in detail..."></textarea>';
             document.getElementById('controlPanel').innerHTML =
                 '<button class="btn btn-primary btn-icon" onclick="startMic()">🎤</button>' +
-                '<button class="btn btn-primary" onclick="submitMockP3()">送信</button>';
+                '<button class="btn btn-primary" onclick="submitMockP3()">Submit</button>';
             speak(q);
         }
 
@@ -4098,10 +4254,10 @@
             document.getElementById('practiceContent').innerHTML =
                 '<div class="question-box"><h3>' + pd.scenario.title + ' (' + (pd.exchangeIndex+1) + '/' + pd.scenario.exchanges.length + ')</h3><div class="question-text">' + pd.scenario.scenario + '</div></div>' +
                 '<div class="chat-bubble bubble-question">' + ex + '</div>' +
-                '<textarea class="response-input" id="responseText" placeholder="英語で応答..."></textarea>';
+                '<textarea class="response-input" id="responseText" placeholder="Respond in English..."></textarea>';
             document.getElementById('controlPanel').innerHTML =
                 '<button class="btn btn-primary btn-icon" onclick="startMic()">🎤</button>' +
-                '<button class="btn btn-primary" onclick="submitConv()">送信</button>';
+                '<button class="btn btn-primary" onclick="submitConv()">Submit</button>';
             speak(ex.replace(/^[^:]+:\s*/, ''));
         }
 
@@ -4212,9 +4368,10 @@
         function openSettings() { document.getElementById('settingsModal').classList.add('active'); }
         function closeSettings() { document.getElementById('settingsModal').classList.remove('active'); saveState(); }
         function resetData() {
-            if (confirm('すべてのデータを削除しますか？')) {
+            if (confirm('Reset all data?')) {
                 appState.stats = { sessionCount:0, averageScore:0, scores:[], vocabularyUsed:new Set(), streakDays:0, lastPracticeDate:null };
-                saveState(); updateHomeStats(); alert('リセットしました');
+                appState.answerHistory = {};
+                saveState(); updateHomeStats(); alert('Data reset complete');
             }
         }
 
